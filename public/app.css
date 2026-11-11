@@ -261,3 +261,16 @@ main { position: relative; z-index: 1; padding: 0 16px calc(110px + var(--safe-b
 .fly { position: fixed; z-index: 70; width: 46px; height: 46px; border-radius: 14px; object-fit: cover; pointer-events: none; transition: all .7s cubic-bezier(.5, -0.4, .6, 1); box-shadow: 0 6px 20px rgba(0, 0, 0, .3); }
 .skeleton { background: linear-gradient(90deg, var(--line), transparent, var(--line)); background-size: 200% 100%; animation: shimmer 1.2s infinite; }
 @keyframes shimmer { to { background-position: -200% 0; } }
+
+/* Admin tezkor tugmalari */
+.abar { display: flex; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); }
+.abar button { flex: 1; height: 34px; border-radius: 11px; background: var(--bg); font-size: 14px; font-weight: 800; }
+.abar button.on { background: #10b98122; }
+.abar button.del { background: #ef444418; color: #ef4444; }
+.abar.big { border: 0; padding: 0; }
+.abar.big button { height: 46px; font-size: 13px; border-radius: 14px; }
+.owner-strip { display: flex; align-items: center; gap: 10px; margin: 4px 0 0; padding: 10px 12px; border-radius: 16px; background: linear-gradient(135deg, #fbbf2433, #f59e0b22); font-size: 12px; font-weight: 700; }
+.owner-strip span { flex: 1; }
+.owner-strip button { font-weight: 800; color: var(--accent); white-space: nowrap; }
+#fab { position: fixed; right: 16px; bottom: calc(92px + var(--safe-b)); z-index: 11; height: 54px; padding: 0 20px; border-radius: 20px; background: var(--grad); color: #fff; font: 800 22px 'Manrope'; display: flex; align-items: center; gap: 6px; box-shadow: 0 14px 30px -10px var(--accent); animation: rise .4s both; }
+#fab span { font-size: 14px; }

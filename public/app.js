@@ -145,7 +145,15 @@
         <div class="price"><b>${money(p.price)}</b>${sale ? `<s>${money(p.oldPrice)}</s>` : ''}</div>
         ${out ? '' : qty ? `<div class="stepper"><button data-act="dec" data-id="${p.id}">−</button><span>${qty}</span><button data-act="inc" data-id="${p.id}">+</button></div>`
           : `<button class="add" data-act="inc" data-id="${p.id}">🛒 Savatga</button>`}
+        ${isAdmin() ? adminBar(p) : ''}
       </div></article>`;
+  }
+  function adminBar(p, big) {
+    const out = p.stock === 0;
+    return `<div class="abar ${big ? 'big' : ''}">
+      <button data-act="edit" data-col="products" data-id="${p.id}">✏️${big ? ' Tahrirlash' : ''}</button>
+      <button data-act="sold" data-id="${p.id}" class="${out ? 'on' : ''}">${out ? '♻️' : '✅'}${big ? (out ? ' Sotuvga qaytarish' : ' Sotildi') : ''}</button>
+      <button data-act="del" data-col="products" data-id="${p.id}" class="del">🗑${big ? ' O\'chirish' : ''}</button></div>`;
   }
 
   function emptyHTML(emoji, title, text, btn) {
@@ -171,6 +179,7 @@
       <div class="spacer"></div>
       <button class="icon-btn" data-act="go" data-to="orders">📦</button>
     </header>
+    ${isAdmin() ? `<div class="owner-strip"><span>${isOwner() ? '👑 Ega rejimi' : '🛡 Admin rejimi'}: mahsulotlarni shu yerning o'zida tahrirlang</span><button data-act="go" data-to="admin">Panel →</button></div>` : ''}
     <div class="search" id="searchbar">
       <label class="search-box">🔍<input id="q" type="search" placeholder="Mahsulot qidirish…" value="${h(F.q)}" enterkeyhint="search"></label>
       <button class="filter-btn" data-act="filters">⚙️${filterCount() ? `<span class="dot">${filterCount()}</span>` : ''}</button>
@@ -470,7 +479,7 @@
       ${p.description ? `<div class="desc">${h(p.description)}</div><br>` : ''}
       <div class="row"><button class="btn ghost" style="flex:0 0 54px" data-act="fav" data-id="${p.id}">${favs.has(p.id) ? '❤️' : '🤍'}</button>
       ${p.stock === 0 ? '<button class="btn ghost" disabled>Tugagan</button>' : `<button class="btn primary" data-act="buy" data-id="${p.id}">🛒 Savatga qo'shish</button>`}</div>
-      ${isAdmin() ? `<br><button class="btn ghost sm" data-act="edit" data-col="products" data-id="${p.id}">✏️ Tahrirlash (admin)</button>` : ''}`);
+      ${isAdmin() ? `<br>${adminBar(p, true)}` : ''}`);
   }
 
   function openFilters() {
@@ -558,6 +567,12 @@
     if (route() || sheetOpen()) bb.show(); else bb.hide();
   }
 
+  function fab() {
+    let f = $('#fab');
+    const show = isAdmin() && ['', 'catalog', 'admin', 'admin/products'].includes(route());
+    if (!show) { f?.remove(); return; }
+    if (!f) { f = document.createElement('button'); f.id = 'fab'; f.dataset.act = 'edit'; f.dataset.col = 'products'; f.innerHTML = '＋<span>Mahsulot</span>'; document.body.appendChild(f); }
+  }
   function tabbar() {
     const r = route().split('/')[0];
     const tabs = [['', '🏠', 'Asosiy'], ['catalog', '🗂', 'Bo\'limlar'], ['fav', '❤️', 'Sevimli'], ['cart', '🛒', 'Savat']];
@@ -579,7 +594,7 @@
     if (seq !== renderSeq) return;
     const focused = document.activeElement?.id === 'q';
     $('#view').innerHTML = html;
-    tabbar(); tgBack();
+    tabbar(); fab(); tgBack();
     if (keepScroll) scrollTo(0, y);
     const q = $('#q');
     if (q) {
@@ -670,13 +685,24 @@
       case 'edit': return editForm(col, id ? D[col].find((x) => x.id === id) : {});
       case 'del': {
         if (!(await confirmBox('Rostdan ham o\'chirasizmi?'))) return;
-        try { await api(`/api/admin/${col}/${id}`, { method: 'DELETE' }); D[col] = D[col].filter((x) => x.id !== id); notify(); toast('O\'chirildi'); render(true); } catch (er) { toast(er.message); }
+        try { await api(`/api/admin/${col}/${id}`, { method: 'DELETE' }); D[col] = D[col].filter((x) => x.id !== id); if (sheetOpen()) closeSheet(); notify(); toast('O\'chirildi'); render(true); } catch (er) { toast(er.message); }
         return;
       }
       case 'up': {
         const list = D[col]; const i = list.findIndex((x) => x.id === id);
         [list[i - 1], list[i]] = [list[i], list[i - 1]]; haptic(); render(true);
         api(`/api/admin/${col}/reorder`, { method: 'POST', body: { ids: list.map((x) => x.id) } }).catch((er) => toast(er.message));
+        return;
+      }
+      case 'sold': {
+        const p = prodById(id); if (!p) return;
+        const stock = p.stock === 0 ? null : 0;
+        try {
+          const item = await api(`/api/admin/products/${id}`, { method: 'PUT', body: { stock } });
+          D.products = D.products.map((x) => (x.id === id ? item : x)); notify();
+          toast(stock === 0 ? 'Sotildi deb belgilandi ✅' : 'Yana sotuvda ♻️');
+          if (sheetOpen()) closeSheet(); render(true);
+        } catch (er) { toast(er.message); }
         return;
       }
       case 'rm-img': { const f = $('#edit-form'); f._images.splice(+el.dataset.i, 1); return renderImgs(); }
