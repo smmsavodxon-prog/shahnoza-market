@@ -500,6 +500,8 @@
     openFilters.bounds = [lo, hi];
   }
 
+  function cartTotal() { return Object.entries(cart).reduce((s, [id, q]) => s + (prodById(id)?.price || 0) * q, 0); }
+  function payLabel() { return D.payments ? `💳 To'lash · ${money(cartTotal())}` : '✅ Tasdiqlash'; }
   function openCheckout() {
     const u = tg?.initDataUnsafe?.user;
     const last = store.get('contact', {});
@@ -509,7 +511,8 @@
       ${field('phone', 'Telefon raqam *', last.phone || '+998 ', 'tel', 'required')}
       ${field('address', 'Manzil', last.address)}
       ${field('comment', 'Izoh', '', 'textarea', 'placeholder="Masalan: kechqurun olib keling"')}
-      <button class="btn primary" type="submit">✅ Tasdiqlash</button></form>`);
+      ${D.payments ? '<p class="hint">💳 To\'lov Telegram ichida xavfsiz amalga oshiriladi. Buyurtma faqat to\'lovdan keyin qabul qilinadi.</p>' : ''}
+      <button class="btn primary" type="submit">${payLabel()}</button></form>`);
   }
 
   function celebrate(order) {
@@ -720,9 +723,18 @@
       const btn = form.querySelector('button[type=submit]'); btn.disabled = true; btn.textContent = 'Yuborilmoqda…';
       try {
         const r = await api('/api/orders', { method: 'POST', body: { ...fd, items: Object.entries(cart).map(([id, qty]) => ({ id, qty })) } });
-        cart = {}; store.set('cart', cart); notify(); render(); celebrate(r.order);
-        refresh();
-      } catch (er) { notify('error'); toast(er.message); btn.disabled = false; btn.textContent = '✅ Tasdiqlash'; }
+        const done = () => { cart = {}; store.set('cart', cart); notify(); render(); celebrate(r.order); refresh(); };
+        if (!r.invoiceUrl) return done();
+        const reset = () => { btn.disabled = false; btn.textContent = payLabel(); };
+        if (!tg?.openInvoice) { toast('To\'lov uchun do\'konni Telegram ichida oching'); return reset(); }
+        tg.openInvoice(r.invoiceUrl, (status) => {
+          if (status === 'paid') return done();
+          reset();
+          if (status === 'failed') { notify('error'); toast('To\'lov o\'tmadi. Qaytadan urinib ko\'ring'); }
+          else if (status === 'cancelled') toast('To\'lov bekor qilindi, buyurtma berilmadi');
+          else if (status === 'pending') toast('To\'lov tekshirilmoqda…');
+        });
+      } catch (er) { notify('error'); toast(er.message); btn.disabled = false; btn.textContent = payLabel(); }
     }
   });
 

@@ -55,6 +55,7 @@ app.get('/api/bootstrap', (req, res) => {
   res.json({
     me: { id: req.user.id, name: req.user.first_name, role: req.role },
     settings: d.settings,
+    payments: paymentsOn(),
     categories: d.categories,
     products: admin ? d.products : d.products.filter((p) => p.active),
     banners: d.banners,
@@ -67,6 +68,20 @@ app.get('/api/bootstrap', (req, res) => {
 const ORDER_STATUSES = ['new', 'accepted', 'shipping', 'done', 'cancelled'];
 let botApi = null;
 
+const PAYMENT_TOKEN = process.env.PAYMENT_PROVIDER_TOKEN || '';
+const paymentsOn = () => !!(PAYMENT_TOKEN && botApi);
+const visible = (o) => o.status !== 'unpaid';
+
+// To'lov tasdiqlangandan keyin: zaxirani kamaytirish va adminlarga xabar
+function finalizeOrder(order) {
+  for (const l of order.items) {
+    const p = db.data.products.find((x) => x.id === l.id);
+    if (p) { p.sold = (p.sold || 0) + l.qty; if (typeof p.stock === 'number') p.stock = Math.max(0, p.stock - l.qty); }
+  }
+  db.save();
+  if (botApi) botApi.notifyNewOrder(order).catch((e) => console.error('notify', e.message));
+}
+
 app.post('/api/orders', async (req, res) => {
   const { items, name, phone, address, comment } = req.body || {};
   if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'Savat bo\'sh' });
@@ -75,31 +90,40 @@ app.post('/api/orders', async (req, res) => {
   for (const it of items.slice(0, 50)) {
     const p = db.data.products.find((x) => x.id === it.id && x.active);
     const qty = Math.max(1, Math.min(99, Number(it.qty) || 1));
-    if (p) lines.push({ id: p.id, title: p.title, price: p.price, qty });
+    if (!p) continue;
+    if (typeof p.stock === 'number' && p.stock < qty) return res.status(400).json({ error: `"${p.title}" dan faqat ${p.stock} dona qolgan` });
+    lines.push({ id: p.id, title: p.title, price: p.price, qty });
   }
   if (!lines.length) return res.status(400).json({ error: 'Mahsulotlar topilmadi' });
+  const pay = paymentsOn();
   const order = {
     id: db.uid(), no: (db.data.orders.length ? Math.max(...db.data.orders.map((o) => o.no || 0)) : 1000) + 1,
     userId: req.user.id, username: req.user.username || '', name: String(name || req.user.first_name || '').slice(0, 80),
     phone: String(phone).slice(0, 30), address: String(address || '').slice(0, 300), comment: String(comment || '').slice(0, 500),
-    items: lines, total: lines.reduce((s, l) => s + l.price * l.qty, 0), status: 'new', createdAt: Date.now(),
+    items: lines, total: lines.reduce((s, l) => s + l.price * l.qty, 0), status: pay ? 'unpaid' : 'new', paid: false, createdAt: Date.now(),
   };
+  // eski to'lanmagan buyurtmalarni tozalash (24 soatdan oshgan)
+  db.data.orders = db.data.orders.filter((o) => o.status !== 'unpaid' || Date.now() - o.createdAt < 864e5);
   db.data.orders.unshift(order);
-  for (const l of lines) {
-    const p = db.data.products.find((x) => x.id === l.id);
-    if (p) { p.sold = (p.sold || 0) + l.qty; if (typeof p.stock === 'number') p.stock = Math.max(0, p.stock - l.qty); }
-  }
   db.save();
-  if (botApi) botApi.notifyNewOrder(order).catch((e) => console.error('notify', e.message));
-  res.json({ ok: true, order });
+  if (!pay) { finalizeOrder(order); return res.json({ ok: true, order }); }
+  try {
+    const invoiceUrl = await botApi.createInvoice(order, PAYMENT_TOKEN);
+    res.json({ ok: true, order, invoiceUrl });
+  } catch (e) {
+    console.error('invoice', e.message);
+    db.data.orders = db.data.orders.filter((o) => o.id !== order.id);
+    db.save();
+    res.status(500).json({ error: 'To\'lov oynasini ochib bo\'lmadi. Keyinroq urinib ko\'ring.' });
+  }
 });
 
 app.get('/api/orders/my', (req, res) => {
-  res.json(db.data.orders.filter((o) => Number(o.userId) === Number(req.user.id)));
+  res.json(db.data.orders.filter((o) => visible(o) && Number(o.userId) === Number(req.user.id)));
 });
 
 // ---------- Admin API ----------
-app.get('/api/admin/orders', adminOnly, (req, res) => res.json(db.data.orders));
+app.get('/api/admin/orders', adminOnly, (req, res) => res.json(db.data.orders.filter(visible)));
 app.patch('/api/admin/orders/:id', adminOnly, async (req, res) => {
   const o = db.data.orders.find((x) => x.id === req.params.id);
   if (!o) return res.status(404).json({ error: 'Topilmadi' });
@@ -112,11 +136,12 @@ app.patch('/api/admin/orders/:id', adminOnly, async (req, res) => {
 
 app.get('/api/admin/stats', adminOnly, (req, res) => {
   const d = db.data;
-  const done = d.orders.filter((o) => o.status !== 'cancelled');
+  const all = d.orders.filter(visible);
+  const done = all.filter((o) => o.status !== 'cancelled');
   res.json({
     users: Object.keys(d.users).length,
-    orders: d.orders.length,
-    newOrders: d.orders.filter((o) => o.status === 'new').length,
+    orders: all.length,
+    newOrders: all.filter((o) => o.status === 'new').length,
     revenue: done.reduce((s, o) => s + o.total, 0),
     products: d.products.length,
   });
@@ -226,7 +251,7 @@ app.get('/health', (req, res) => res.send('ok'));
 // ---------- Ishga tushirish ----------
 (async () => {
   if (TOKEN) {
-    const { bot, api } = createBot({ token: TOKEN, publicUrl: PUBLIC_URL, isAdmin, isOwner, ownerId: OWNER_ID });
+    const { bot, api } = createBot({ token: TOKEN, publicUrl: PUBLIC_URL, isAdmin, isOwner, ownerId: OWNER_ID, finalizeOrder });
     botApi = api;
     if (PUBLIC_URL.startsWith('https://')) {
       const { webhookCallback } = require('grammy');

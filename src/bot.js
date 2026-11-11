@@ -8,7 +8,7 @@ const STATUS = {
 const esc = (s) => String(s ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 const money = (n) => Number(n || 0).toLocaleString('ru-RU').replace(/,/g, ' ') + ' ' + db.data.settings.currency;
 
-function createBot({ token, publicUrl, isAdmin, isOwner, ownerId }) {
+function createBot({ token, publicUrl, isAdmin, isOwner, ownerId, finalizeOrder }) {
   const bot = new Bot(token);
   const appUrl = (hash) => publicUrl + '/' + (hash ? '#' + hash : '');
 
@@ -111,6 +111,36 @@ function createBot({ token, publicUrl, isAdmin, isOwner, ownerId }) {
     ctx.answerCallbackQuery({ text: STATUS[status] });
   });
 
+  // ---------- To'lov (Click / Payme orqali Telegram Payments) ----------
+  bot.on('pre_checkout_query', async (ctx) => {
+    const q = ctx.preCheckoutQuery;
+    const o = db.data.orders.find((x) => x.id === q.invoice_payload);
+    let err = '';
+    if (!o || o.status !== 'unpaid') err = 'Buyurtma topilmadi yoki allaqachon to\'langan. Qaytadan buyurtma bering.';
+    else if (q.total_amount !== o.total * 100) err = 'Narx o\'zgargan. Qaytadan buyurtma bering.';
+    else {
+      for (const l of o.items) {
+        const p = db.data.products.find((x) => x.id === l.id);
+        if (!p || p.active === false) { err = `"${l.title}" endi sotuvda yo'q.`; break; }
+        if (typeof p.stock === 'number' && p.stock < l.qty) { err = `"${l.title}" dan faqat ${p.stock} dona qoldi.`; break; }
+      }
+    }
+    await ctx.answerPreCheckoutQuery(!err, err ? { error_message: err } : undefined);
+  });
+
+  bot.on('message:successful_payment', async (ctx) => {
+    const sp = ctx.message.successful_payment;
+    const o = db.data.orders.find((x) => x.id === sp.invoice_payload);
+    if (!o) return;
+    if (o.status === 'unpaid') {
+      Object.assign(o, {
+        status: 'new', paid: true, paidAt: Date.now(),
+        payment: { provider: sp.provider_payment_charge_id, telegram: sp.telegram_payment_charge_id, amount: sp.total_amount / 100, currency: sp.currency },
+      });
+      finalizeOrder(o);
+    }
+  });
+
   // Matnli tugmalar
   bot.on('message:text', async (ctx) => {
     const b = db.data.botButtons.find((x) => x.text === ctx.message.text);
@@ -137,7 +167,8 @@ function createBot({ token, publicUrl, isAdmin, isOwner, ownerId }) {
     const items = o.items.map((i) => `• ${esc(i.title)} × ${i.qty} = ${money(i.price * i.qty)}`).join('\n');
     return `🛒 <b>Buyurtma #${o.no}</b> — ${STATUS[o.status]}\n\n${items}\n\n<b>Jami: ${money(o.total)}</b>\n\n`
       + `👤 <a href="tg://user?id=${o.userId}">${esc(o.name || 'Mijoz')}</a> ${o.username ? '@' + esc(o.username) : ''}\n📞 ${esc(o.phone)}`
-      + (o.address ? `\n📍 ${esc(o.address)}` : '') + (o.comment ? `\n💬 ${esc(o.comment)}` : '');
+      + (o.address ? `\n📍 ${esc(o.address)}` : '') + (o.comment ? `\n💬 ${esc(o.comment)}` : '')
+      + (o.paid ? `\n\n💳 <b>To'langan</b> (${money(o.payment?.amount ?? o.total)})` : '');
   }
   function statusKb(o) {
     return new InlineKeyboard()
@@ -146,6 +177,14 @@ function createBot({ token, publicUrl, isAdmin, isOwner, ownerId }) {
   }
 
   const api = {
+    async createInvoice(o, providerToken) {
+      const prices = o.items.map((i) => ({ label: `${i.title}`.slice(0, 28) + (i.qty > 1 ? ` ×${i.qty}` : ''), amount: i.price * i.qty * 100 }));
+      return bot.api.createInvoiceLink(
+        `${db.data.settings.shopName} #${o.no}`.slice(0, 32),
+        o.items.map((i) => `${i.title} × ${i.qty}`).join(', ').slice(0, 255),
+        o.id, providerToken, 'UZS', prices,
+      );
+    },
     async setup() {
       await bot.api.setMyCommands([
         { command: 'start', description: 'Bosh menyu' },
